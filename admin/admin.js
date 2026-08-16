@@ -1,361 +1,410 @@
 /* =========================================================
-   ADMIN.CSS
-   Same brand DNA as the storefront (dark + cyan) but laid out
-   as a functional dashboard: bottom tab bar for one-thumb use
-   on Android, large tap targets, plain data-forward panels.
+   ADMIN.JS
+   Handles: login/logout, loading products (including hidden
+   ones), the add/edit form, image upload to Supabase Storage,
+   and delete/hide/feature actions. Every change here writes
+   straight to Supabase, so the public storefront picks it up
+   on its next page load automatically — no other file to touch.
    ========================================================= */
-:root{
-  --bg: #090c0f;
-  --surface: #12171d;
-  --surface-2: #171e26;
-  --border: rgba(255,255,255,0.09);
-  --border-strong: rgba(255,255,255,0.16);
-  --text: #f3f6f9;
-  --text-muted: #8b96a3;
-  --text-faint: #5c6773;
-  --cyan: #2be6e0;
-  --cyan-dim: rgba(43,230,224,0.14);
-  --amber: #ffb547;
-  --red: #ff6b6b;
-  --red-dim: rgba(255,107,107,0.14);
-  --radius-lg: 18px;
-  --radius-md: 12px;
-  --radius-sm: 9px;
-}
-*{ box-sizing: border-box; }
-html{ background: var(--bg); }
-body{
-  margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font-family: 'Inter', system-ui, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  min-height: 100vh;
-}
-.accent{ color: var(--cyan); }
-:focus-visible{ outline: 2px solid var(--cyan); outline-offset: 2px; }
 
-/* ===================== LOGIN ===================== */
-.login-screen{
-  min-height: 100vh;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-}
-/* Without this, `display: grid` above always wins over the browser's
-   built-in [hidden]{display:none} rule at equal specificity, so
-   loginView.hidden = true (set in admin.js after a successful login)
-   had no visible effect and the login screen stayed on top forever. */
-.login-screen[hidden]{
-  display: none;
-}
-.dashboard[hidden]{
-  display: none;
-}
-.login-card{
-  width: 100%;
-  max-width: 380px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 32px 24px;
-  text-align: center;
-}
-.login-mark{
-  font-family: 'Space Grotesk', sans-serif;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  font-size: 15px;
-  color: var(--text-muted);
-  margin: 0 0 20px;
-}
-.login-card h1{
-  font-family: 'Space Grotesk', sans-serif;
-  font-size: 22px;
-  margin: 0 0 6px;
-}
-.login-sub{
-  color: var(--text-muted);
-  font-size: 13.5px;
-  margin: 0 0 24px;
-}
-.login-error{
-  color: var(--red);
-  background: var(--red-dim);
-  border-radius: var(--radius-sm);
-  padding: 10px 12px;
-  font-size: 13px;
-  margin: 14px 0 0;
+const CATEGORIES = [
+  { id: "trending",   label: "🔥 Trending" },
+  { id: "audio",       label: "🎧 Audio" },
+  { id: "tech",         label: "📱 Tech" },
+  { id: "gadgets",      label: "💻 Gadgets" },
+  { id: "student",      label: "🎒 Student Finds" },
+  { id: "room-setup",   label: "🏠 Room Setup" },
+  { id: "under-500",    label: "💰 Under ₹500" },
+  { id: "under-1000",   label: "💸 Under ₹1000" },
+];
+
+let allProducts = [];
+let editingId = null;
+
+// ---------------------------------------------------------
+// AUTH
+// ---------------------------------------------------------
+const loginView = document.getElementById("loginView");
+const dashboardView = document.getElementById("dashboardView");
+const loginForm = document.getElementById("loginForm");
+const loginError = document.getElementById("loginError");
+const loginBtn = document.getElementById("loginBtn");
+
+async function checkSession() {
+  const { data, error } = await sb.auth.getSession();
+  console.log("[under1kfinds] checkSession() ->", { data, error });
+  if (data.session) {
+    showDashboard();
+  } else {
+    loginView.hidden = false;
+    dashboardView.hidden = true;
+  }
 }
 
-/* ===================== FORM FIELDS ===================== */
-.field{
-  display: block;
-  text-align: left;
-  margin-bottom: 16px;
-}
-.field span{
-  display: block;
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--text-muted);
-  margin-bottom: 6px;
-}
-.field-hint{
-  display: block;
-  font-size: 11.5px;
-  font-weight: 400;
-  color: var(--text-faint);
-  margin: 6px 0;
-}
-input[type="text"], input[type="email"], input[type="password"],
-input[type="number"], input[type="url"], input[type="file"], textarea{
-  width: 100%;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  color: var(--text);
-  padding: 13px 14px;
-  border-radius: var(--radius-sm);
-  font-size: 15px;
-  font-family: inherit;
-}
-input:focus, textarea:focus{ border-color: var(--cyan); outline: none; }
-textarea{ resize: vertical; }
-.field-row{
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
+loginForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  loginError.hidden = true;
+  loginBtn.textContent = "Logging in…";
+  loginBtn.disabled = true;
+
+  const email = document.getElementById("loginEmail").value.trim();
+  const password = document.getElementById("loginPassword").value;
+
+  const signInResult = await sb.auth.signInWithPassword({ email, password });
+  console.log("[under1kfinds] signInWithPassword() ->", signInResult);
+  const { data: signInData, error } = signInResult;
+
+  loginBtn.textContent = "Log in";
+  loginBtn.disabled = false;
+
+  if (error) {
+    console.error("[under1kfinds] Login failed:", error);
+    loginError.textContent = "Couldn't log in — " + error.message;
+    loginError.hidden = false;
+    return;
+  }
+
+  if (!signInData || !signInData.session) {
+    // error was null but Supabase still didn't hand back a session —
+    // surface this instead of silently proceeding.
+    console.error("[under1kfinds] signInWithPassword returned no error but no session either:", signInData);
+    loginError.textContent = "Login didn't return a session. Check the browser console for details.";
+    loginError.hidden = false;
+    return;
+  }
+
+  // Double-check the session is actually readable right after sign-in
+  const { data: sessionCheck, error: sessionError } = await sb.auth.getSession();
+  console.log("[under1kfinds] getSession() immediately after login ->", { sessionCheck, sessionError });
+
+  if (sessionError || !sessionCheck.session) {
+    loginError.textContent = "Signed in, but the session couldn't be confirmed. Check the browser console.";
+    loginError.hidden = false;
+    return;
+  }
+
+  console.log("[under1kfinds] Login confirmed, showing dashboard. User:", sessionCheck.session.user?.email);
+  showDashboard();
+});
+
+document.getElementById("logoutBtn").addEventListener("click", async () => {
+  await sb.auth.signOut();
+  loginView.hidden = false;
+  dashboardView.hidden = true;
+  loginForm.reset();
+});
+
+function showDashboard() {
+  loginView.hidden = true;
+  dashboardView.hidden = false;
+  console.log("[under1kfinds] showDashboard() -> loginView.hidden:", loginView.hidden, "dashboardView.hidden:", dashboardView.hidden);
+  loadProducts();
 }
 
-.checkbox-grid{
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-.checkbox-grid label{
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 10px 10px;
-  font-size: 13px;
-}
-.checkbox-grid input{ width: 18px; height: 18px; accent-color: var(--cyan); }
+// ---------------------------------------------------------
+// TABS
+// ---------------------------------------------------------
+document.querySelectorAll(".tab-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab-btn").forEach((b) => b.classList.toggle("active", b === btn));
+    document.querySelectorAll(".tab-panel").forEach((p) => (p.hidden = true));
+    document.getElementById("panel-" + btn.dataset.tab).hidden = false;
+  });
+});
 
-.toggle-field{
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 13px 14px;
-  margin-bottom: 18px;
-  font-size: 14px;
-}
-.toggle-field input{ width: 20px; height: 20px; accent-color: var(--cyan); }
-
-/* ===================== BUTTONS ===================== */
-.btn{
-  border: none;
-  border-radius: var(--radius-sm);
-  font-family: inherit;
-  font-weight: 600;
-  font-size: 15px;
-  padding: 15px 18px;
-  min-height: 50px;
-  cursor: pointer;
-  transition: transform 0.12s ease, background 0.15s ease;
-}
-.btn:active{ transform: scale(0.97); }
-.btn-block{ width: 100%; margin-top: 4px; }
-.btn-primary{ background: var(--cyan); color: #06201f; }
-.btn-primary:hover{ background: #4ef1ec; }
-.btn-ghost{
-  background: transparent;
-  border: 1px solid var(--border-strong);
-  color: var(--text-muted);
-  margin-top: 10px;
-}
-.btn-small{
-  min-height: 42px;
-  padding: 10px 14px;
-  font-size: 13.5px;
-  border-radius: var(--radius-sm);
-}
-.btn-danger{ background: var(--red-dim); color: var(--red); border: 1px solid rgba(255,107,107,0.3); }
-.btn-neutral{ background: var(--surface-2); color: var(--text); border: 1px solid var(--border-strong); }
-.btn-cyan-outline{ background: var(--cyan-dim); color: var(--cyan); border: 1px solid rgba(43,230,224,0.35); }
-
-.form-status{
-  margin: 14px 0 0;
-  font-size: 13px;
-  padding: 10px 12px;
-  border-radius: var(--radius-sm);
-}
-.form-status.ok{ background: var(--cyan-dim); color: var(--cyan); }
-.form-status.err{ background: var(--red-dim); color: var(--red); }
-
-/* ===================== DASHBOARD SHELL ===================== */
-.dashboard{ padding-bottom: 88px; min-height: 100vh; }
-.admin-header{
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 18px;
-  background: rgba(9,12,15,0.9);
-  backdrop-filter: blur(12px);
-  border-bottom: 1px solid var(--border);
-}
-.admin-header-title{
-  font-family: 'Space Grotesk', sans-serif;
-  font-weight: 700;
-  font-size: 16px;
-  margin: 0;
-}
-.logout-btn{
-  background: var(--surface-2);
-  border: 1px solid var(--border-strong);
-  color: var(--text-muted);
-  padding: 8px 14px;
-  border-radius: 999px;
-  font-size: 13px;
-  font-weight: 500;
-}
-.logout-btn:hover{ color: var(--text); }
-
-.admin-main{ max-width: 640px; margin: 0 auto; padding: 20px 18px 10px; }
-.panel-title{
-  font-family: 'Space Grotesk', sans-serif;
-  font-size: 20px;
-  margin: 0 0 18px;
-}
-.section-subtitle{
-  font-size: 13px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-faint);
-  margin: 26px 0 12px;
+function goToTab(name) {
+  document.querySelector(`.tab-btn[data-tab="${name}"]`).click();
 }
 
-/* ===================== STATS ===================== */
-.stat-grid{
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
-}
-.stat-card{
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 16px 10px;
-  text-align: center;
-}
-.stat-num{
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 22px;
-  font-weight: 700;
-  color: var(--cyan);
-  margin: 0 0 4px;
-}
-.stat-label{
-  font-size: 11px;
-  color: var(--text-muted);
-  margin: 0;
+// ---------------------------------------------------------
+// LOAD PRODUCTS (admin sees hidden ones too, via RLS policy)
+// ---------------------------------------------------------
+const globalError = document.getElementById("globalError");
+
+function showGlobalError(message) {
+  globalError.textContent = message;
+  globalError.hidden = false;
 }
 
-.chip-list{ display: flex; flex-wrap: wrap; gap: 8px; }
-.chip{
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 7px 12px;
-  font-size: 12.5px;
-  color: var(--text-muted);
-}
-.chip b{ color: var(--text); font-family: 'JetBrains Mono', monospace; }
-
-.recent-list, .manage-list{ display: flex; flex-direction: column; gap: 10px; }
-.recent-item{
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 10px;
-}
-.recent-item img{
-  width: 46px; height: 46px; border-radius: 8px; object-fit: cover; background: var(--surface-2);
-  flex-shrink: 0;
-}
-.recent-item-name{ font-size: 13.5px; font-weight: 600; margin: 0 0 2px; }
-.recent-item-meta{ font-size: 11.5px; color: var(--text-faint); margin: 0; }
-
-/* ===================== MANAGE LIST ===================== */
-.admin-search{ margin-bottom: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 4px; }
-.admin-search input{ border: none; background: none; }
-
-.manage-card{
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 12px;
-}
-.manage-card.is-hidden{ opacity: 0.55; }
-.manage-card-top{ display: flex; gap: 12px; }
-.manage-card-top img{
-  width: 56px; height: 56px; border-radius: 10px; object-fit: cover; background: var(--surface-2); flex-shrink: 0;
-}
-.manage-card-name{ font-size: 14.5px; font-weight: 700; margin: 0 0 3px; }
-.manage-card-price{ font-family: 'JetBrains Mono', monospace; color: var(--cyan); font-size: 13.5px; }
-.manage-card-tags{ display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
-.tag-pill{
-  font-size: 10.5px;
-  padding: 3px 8px;
-  border-radius: 999px;
-  background: var(--surface-2);
-  color: var(--text-faint);
-  border: 1px solid var(--border);
-}
-.tag-pill.on{ background: var(--cyan-dim); color: var(--cyan); border-color: transparent; }
-.manage-card-actions{
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
-  margin-top: 12px;
+function clearGlobalError() {
+  globalError.hidden = true;
 }
 
-/* ===================== BOTTOM TAB BAR ===================== */
-.tab-bar{
-  position: fixed;
-  bottom: 0; left: 0; right: 0;
-  display: flex;
-  background: rgba(9,12,15,0.95);
-  backdrop-filter: blur(14px);
-  border-top: 1px solid var(--border);
-  z-index: 30;
-  padding-bottom: env(safe-area-inset-bottom, 0);
+async function loadProducts() {
+  const { data, error } = await sb
+    .from("products")
+    .select("*")
+    .order("created_at", { ascending: false });
+
+  console.log("[under1kfinds] loadProducts() ->", { rowCount: data?.length, error });
+
+  if (error) {
+    // Common cause: an RLS policy on `products` is missing or wrong,
+    // or the session isn't actually authenticated when this query runs.
+    showGlobalError("Couldn't load products from Supabase: " + error.message + " (code: " + (error.code || "unknown") + ")");
+    return;
+  }
+  clearGlobalError();
+  allProducts = data || [];
+  renderOverview();
+  renderManageList();
 }
-.tab-btn{
-  flex: 1;
-  background: none;
-  border: none;
-  color: var(--text-faint);
-  padding: 12px 4px 10px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 3px;
-  font-size: 11.5px;
-  font-family: inherit;
-  min-height: 58px;
+
+// ---------------------------------------------------------
+// OVERVIEW
+// ---------------------------------------------------------
+function renderOverview() {
+  document.getElementById("statTotal").textContent = allProducts.length;
+  document.getElementById("statVisible").textContent = allProducts.filter((p) => !p.hidden).length;
+  document.getElementById("statFeatured").textContent = allProducts.filter((p) => p.featured).length;
+
+  const catStats = document.getElementById("categoryStats");
+  catStats.innerHTML = CATEGORIES.map((cat) => {
+    const count = allProducts.filter((p) => (p.category || []).includes(cat.id)).length;
+    return `<span class="chip">${cat.label} <b>${count}</b></span>`;
+  }).join("");
+
+  const recent = document.getElementById("recentList");
+  const recentProducts = allProducts.slice(0, 5);
+  recent.innerHTML = recentProducts.length
+    ? recentProducts
+        .map(
+          (p) => `
+      <div class="recent-item">
+        <img src="${p.image || ""}" alt="">
+        <div>
+          <p class="recent-item-name">${p.name}</p>
+          <p class="recent-item-meta">₹${p.price}${p.hidden ? " · hidden" : ""}${p.featured ? " · featured" : ""}</p>
+        </div>
+      </div>`
+        )
+        .join("")
+    : `<p class="recent-item-meta">No products yet — add your first one.</p>`;
 }
-.tab-icon{ font-size: 19px; }
-.tab-btn.active{ color: var(--cyan); }
-   
+
+// ---------------------------------------------------------
+// ADD / EDIT FORM
+// ---------------------------------------------------------
+const catCheckboxWrap = document.getElementById("categoryCheckboxes");
+catCheckboxWrap.innerHTML = CATEGORIES.map(
+  (cat) => `
+  <label>
+    <input type="checkbox" value="${cat.id}" class="cat-checkbox">
+    <span>${cat.label}</span>
+  </label>`
+).join("");
+
+const productForm = document.getElementById("productForm");
+const formStatus = document.getElementById("formStatus");
+const saveBtn = document.getElementById("saveBtn");
+const cancelEditBtn = document.getElementById("cancelEditBtn");
+
+function resetForm() {
+  productForm.reset();
+  document.getElementById("productId").value = "";
+  document.querySelectorAll(".cat-checkbox").forEach((c) => (c.checked = false));
+  editingId = null;
+  saveBtn.textContent = "Publish";
+  cancelEditBtn.hidden = true;
+}
+
+cancelEditBtn.addEventListener("click", () => {
+  resetForm();
+  formStatus.hidden = true;
+});
+
+function fillFormForEdit(product) {
+  editingId = product.id;
+  document.getElementById("productId").value = product.id;
+  document.getElementById("f_name").value = product.name || "";
+  document.getElementById("f_imageUrl").value = product.image || "";
+  document.getElementById("f_price").value = product.price ?? "";
+  document.getElementById("f_mrp").value = product.mrp ?? "";
+  document.getElementById("f_discount").value = product.discount ?? "";
+  document.getElementById("f_description").value = product.description || "";
+  document.getElementById("f_rating").value = product.rating ?? "";
+  document.getElementById("f_reviews").value = product.reviews ?? "";
+  document.getElementById("f_link").value = product.affiliate_link || "";
+  document.getElementById("f_featured").checked = !!product.featured;
+
+  document.querySelectorAll(".cat-checkbox").forEach((c) => {
+    c.checked = (product.category || []).includes(c.value);
+  });
+
+  saveBtn.textContent = "Save changes";
+  cancelEditBtn.hidden = false;
+  formStatus.hidden = true;
+  goToTab("add");
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+async function uploadImageIfNeeded() {
+  const fileInput = document.getElementById("f_imageFile");
+  const urlInput = document.getElementById("f_imageUrl");
+  const file = fileInput.files[0];
+
+  if (!file) {
+    return urlInput.value.trim() || null;
+  }
+
+  const ext = file.name.split(".").pop();
+  const path = `product-${Date.now()}.${ext}`;
+
+  const uploadResult = await sb.storage.from("product-images").upload(path, file, {
+    upsert: false,
+  });
+  console.log("[under1kfinds] storage.upload() ->", uploadResult);
+
+  if (uploadResult.error) {
+    // Common cause: the `product-images` bucket doesn't exist, or its
+    // INSERT policy for authenticated users is missing (see supabase-setup.sql).
+    throw new Error("Image upload failed: " + uploadResult.error.message);
+  }
+
+  const { data } = sb.storage.from("product-images").getPublicUrl(path);
+  return data.publicUrl;
+}
+
+productForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  formStatus.hidden = true;
+  saveBtn.disabled = true;
+  const wasEditing = !!editingId;
+  saveBtn.textContent = wasEditing ? "Saving…" : "Publishing…";
+
+  try {
+    const imageUrl = await uploadImageIfNeeded();
+
+    const selectedCategories = Array.from(document.querySelectorAll(".cat-checkbox:checked")).map(
+      (c) => c.value
+    );
+
+    const discountVal = document.getElementById("f_discount").value;
+    const mrpVal = document.getElementById("f_mrp").value;
+    const ratingVal = document.getElementById("f_rating").value;
+    const reviewsVal = document.getElementById("f_reviews").value;
+
+    const payload = {
+      name: document.getElementById("f_name").value.trim(),
+      image: imageUrl,
+      price: Number(document.getElementById("f_price").value),
+      mrp: mrpVal ? Number(mrpVal) : null,
+      discount: discountVal ? Number(discountVal) : null,
+      description: document.getElementById("f_description").value.trim(),
+      category: selectedCategories,
+      rating: ratingVal ? Number(ratingVal) : null,
+      reviews: reviewsVal ? Number(reviewsVal) : null,
+      affiliate_link: document.getElementById("f_link").value.trim(),
+      featured: document.getElementById("f_featured").checked,
+    };
+
+    let result;
+    if (wasEditing) {
+      result = await sb.from("products").update(payload).eq("id", editingId).select();
+    } else {
+      payload.hidden = false;
+      result = await sb.from("products").insert([payload]).select();
+    }
+    console.log("[under1kfinds] " + (wasEditing ? "update" : "insert") + " products ->", result);
+
+    if (result.error) {
+      // Common causes: INSERT/UPDATE RLS policy missing on `products`,
+      // a NOT NULL column left empty, or the session expired mid-form.
+      throw new Error(result.error.message + (result.error.code ? " (code: " + result.error.code + ")" : ""));
+    }
+    if (!result.data || result.data.length === 0) {
+      // No hard error, but nothing came back either — usually means the
+      // row was written but the SELECT-after-write was blocked by RLS,
+      // or, for update, that no row matched editingId.
+      console.warn("[under1kfinds] Write returned no error but no row was returned:", result);
+    }
+
+    resetForm();
+    formStatus.textContent = wasEditing ? "Changes saved. The public store is updated." : "Product published to the store.";
+    formStatus.className = "form-status ok";
+    formStatus.hidden = false;
+
+    await loadProducts();
+  } catch (err) {
+    formStatus.textContent = err.message || "Something went wrong. Please try again.";
+    formStatus.className = "form-status err";
+    formStatus.hidden = false;
+  } finally {
+    saveBtn.disabled = false;
+    if (!wasEditing || editingId === null) saveBtn.textContent = "Publish";
+  }
+});
+
+// ---------------------------------------------------------
+// MANAGE LIST
+// ---------------------------------------------------------
+const manageList = document.getElementById("manageList");
+const manageSearch = document.getElementById("manageSearch");
+
+function renderManageList() {
+  const term = manageSearch.value.trim().toLowerCase();
+  const items = allProducts.filter((p) => !term || p.name.toLowerCase().includes(term));
+
+  manageList.innerHTML = items.length
+    ? items.map(manageCardHTML).join("")
+    : `<p class="recent-item-meta">No products found.</p>`;
+
+  items.forEach((p) => {
+    document.getElementById(`edit-${p.id}`)?.addEventListener("click", () => fillFormForEdit(p));
+    document.getElementById(`hide-${p.id}`)?.addEventListener("click", () => toggleField(p.id, "hidden", !p.hidden));
+    document.getElementById(`feature-${p.id}`)?.addEventListener("click", () => toggleField(p.id, "featured", !p.featured));
+    document.getElementById(`delete-${p.id}`)?.addEventListener("click", () => deleteProduct(p.id, p.name));
+  });
+}
+
+function manageCardHTML(p) {
+  return `
+    <div class="manage-card ${p.hidden ? "is-hidden" : ""}">
+      <div class="manage-card-top">
+        <img src="${p.image || ""}" alt="">
+        <div>
+          <p class="manage-card-name">${p.name}</p>
+          <p class="manage-card-price">₹${p.price}</p>
+          <div class="manage-card-tags">
+            ${p.hidden ? `<span class="tag-pill">Hidden</span>` : `<span class="tag-pill on">Visible</span>`}
+            ${p.featured ? `<span class="tag-pill on">Featured</span>` : ""}
+          </div>
+        </div>
+      </div>
+      <div class="manage-card-actions">
+        <button class="btn btn-small btn-neutral" id="edit-${p.id}">Edit</button>
+        <button class="btn btn-small btn-cyan-outline" id="feature-${p.id}">${p.featured ? "Unfeature" : "Feature"}</button>
+        <button class="btn btn-small btn-neutral" id="hide-${p.id}">${p.hidden ? "Show" : "Hide"}</button>
+        <button class="btn btn-small btn-danger" id="delete-${p.id}">Delete</button>
+      </div>
+    </div>`;
+}
+
+manageSearch.addEventListener("input", renderManageList);
+
+async function toggleField(id, field, value) {
+  const { error, data } = await sb.from("products").update({ [field]: value }).eq("id", id).select();
+  console.log("[under1kfinds] toggleField()", field, "->", { error, data });
+  if (error) {
+    alert("Couldn't update product: " + error.message);
+    return;
+  }
+  await loadProducts();
+}
+
+async function deleteProduct(id, name) {
+  if (!confirm(`Delete "${name}"? This can't be undone.`)) return;
+  const { error, data } = await sb.from("products").delete().eq("id", id).select();
+  console.log("[under1kfinds] deleteProduct() ->", { error, data });
+  if (error) {
+    alert("Couldn't delete product: " + error.message);
+    return;
+  }
+  await loadProducts();
+}
+
+// ---------------------------------------------------------
+// INIT
+// ---------------------------------------------------------
+checkSession();
+                                                    
